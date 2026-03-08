@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<link rel="manifest" href="manifest.json">
+<title>Checkers - Smart AI with Audio</title>
+<style>
+  body { text-align:center; font-family: 'Segoe UI', Arial, sans-serif; background:#222; color:white; }
+  canvas { background:#444; display:block; margin:20px auto; border: 8px solid #111; box-shadow: 0 0 20px rgba(0,0,0,0.5); cursor: pointer; }
+  #turn { font-size: 24px; margin-bottom:10px; font-weight: bold; color: #00ffcc; text-transform: uppercase; letter-spacing: 2px; height: 30px; }
+  .controls { margin-top: 10px; font-size: 14px; color: #aaa; }
+</style>
+</head>
+<body>
+<h2>Checkers: Human vs. Minimax AI</h2>
+<div id="turn">Your Turn</div>
+<canvas id="board" width="400" height="400"></canvas>
+<div class="controls">Sound Enabled • Difficulty: Hard</div>
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js');
+  }
+</script>
+<script>
+// --- AUDIO ENGINE ---
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+const SFX = {
+    play(freq, type, duration, vol = 0.1) {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + duration);
+    },
+    move() { this.play(150, 'sine', 0.2); },
+    jump() { this.play(400, 'square', 0.15, 0.05); },
+    king() { 
+        this.play(523.25, 'triangle', 0.5); 
+        setTimeout(() => this.play(659.25, 'triangle', 0.5), 100);
+    },
+    win() {
+        [523, 659, 783, 1046].forEach((f, i) => setTimeout(() => this.play(f, 'sine', 0.8), i * 150));
+    },
+    lose() {
+        [392, 349, 311, 261].forEach((f, i) => setTimeout(() => this.play(f, 'sawtooth', 0.8, 0.05), i * 200));
+    }
+};
+
+// --- GAME LOGIC ---
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+const SIZE = 8, TILE = canvas.width / SIZE;
+const EMPTY = 0, PLAYER = 1, COMPUTER = 2, PLAYER_KING = 3, COMPUTER_KING = 4;
+
+let board = [], selected = null, validMoves = [], playerTurn = true;
+
+function initBoard() {
+  for(let y=0; y<SIZE; y++){
+    board[y]=[];
+    for(let x=0; x<SIZE; x++){
+      if(y<3 && (x+y)%2===1) board[y][x] = COMPUTER;
+      else if(y>4 && (x+y)%2===1) board[y][x] = PLAYER;
+      else board[y][x] = EMPTY;
+    }
+  }
+}
+initBoard();
+
+function drawBoard(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  for(let y=0; y<SIZE; y++){
+    for(let x=0; x<SIZE; x++){
+      ctx.fillStyle = (x+y)%2===0 ? '#f0d9b5' : '#b58863';
+      ctx.fillRect(x*TILE, y*TILE, TILE, TILE);
+      const p = board[y][x];
+      if(p !== EMPTY){
+        ctx.beginPath();
+        ctx.arc(x*TILE+TILE/2, y*TILE+TILE/2, TILE/2-10, 0, Math.PI*2);
+        if(p===PLAYER) ctx.fillStyle='#e74c3c';
+        else if(p===COMPUTER) ctx.fillStyle='#34495e';
+        else if(p===PLAYER_KING) ctx.fillStyle='#c0392b';
+        else if(p===COMPUTER_KING) ctx.fillStyle='#2c3e50';
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = 3; ctx.stroke();
+        
+        if(p===PLAYER_KING || p===COMPUTER_KING){
+          ctx.fillStyle='gold'; ctx.font = "bold 24px Arial"; ctx.textAlign = "center";
+          ctx.fillText("K", x*TILE + TILE/2, y*TILE + TILE/1.5);
+        }
+      }
+    }
+  }
+  if(selected){
+    ctx.strokeStyle='yellow'; ctx.lineWidth=4;
+    ctx.strokeRect(selected.x*TILE, selected.y*TILE, TILE, TILE);
+    validMoves.forEach(m => {
+        ctx.fillStyle='rgba(0, 255, 0, 0.3)';
+        ctx.fillRect(m.x*TILE, m.y*TILE, TILE, TILE);
+    });
+  }
+}
+
+function getPieceDirs(piece){
+  if(piece===PLAYER) return [[-1,-1],[1,-1]];
+  if(piece===COMPUTER) return [[-1,1],[1,1]];
+  return [[-1,-1],[1,-1],[-1,1],[1,1]];
+}
+
+function isOpponent(me, other){
+  if(other === EMPTY) return false;
+  const isMePlayer = (me === PLAYER || me === PLAYER_KING);
+  const isOtherPlayer = (other === PLAYER || other === PLAYER_KING);
+  return isMePlayer !== isOtherPlayer;
+}
+
+function getValidMovesForPiece(x, y, currentBoard){
+  const piece = currentBoard[y][x];
+  const dirs = getPieceDirs(piece);
+  let jumps = [], slides = [];
+  dirs.forEach(d => {
+    const nx = x+d[0], ny = y+d[1];
+    if(nx>=0 && nx<SIZE && ny>=0 && ny<SIZE){
+      if(currentBoard[ny][nx]===EMPTY) slides.push({x:nx, y:ny, jump:false});
+      else if(isOpponent(piece, currentBoard[ny][nx])){
+        const nx2 = x+2*d[0], ny2 = y+2*d[1];
+        if(nx2>=0 && nx2<SIZE && ny2>=0 && ny2<SIZE && currentBoard[ny2][nx2]===EMPTY){
+          jumps.push({x:nx2, y:ny2, jump:true, jumped:{x:nx, y:ny}});
+        }
+      }
+    }
+  });
+  return jumps.length > 0 ? jumps : slides;
+}
+
+function getAllPossibleMoves(currentBoard, turn){
+  let allMoves = [];
+  const isPlayer = (turn === PLAYER);
+  for(let y=0; y<SIZE; y++){
+    for(let x=0; x<SIZE; x++){
+      const p = currentBoard[y][x];
+      if(p !== EMPTY && ((isPlayer && (p===PLAYER||p===PLAYER_KING)) || (!isPlayer && (p===COMPUTER||p===COMPUTER_KING)))){
+        getValidMovesForPiece(x, y, currentBoard).forEach(m => allMoves.push({from:{x,y}, to:m}));
+      }
+    }
+  }
+  const jumpMoves = allMoves.filter(m => m.to.jump);
+  return jumpMoves.length > 0 ? jumpMoves : allMoves;
+}
+
+// --- AI MINIMAX ---
+function evaluate(b) {
+  let score = 0;
+  for(let y=0; y<SIZE; y++){
+    for(let x=0; x<SIZE; x++){
+      if(b[y][x] === COMPUTER) score += (10 + y);
+      else if(b[y][x] === COMPUTER_KING) score += 25;
+      else if(b[y][x] === PLAYER) score -= (10 + (7-y));
+      else if(b[y][x] === PLAYER_KING) score -= 25;
+    }
+  }
+  return score;
+}
+
+function minimax(tempBoard, depth, alpha, beta, isMaximizing) {
+  if(depth === 0) return evaluate(tempBoard);
+  const moves = getAllPossibleMoves(tempBoard, isMaximizing ? COMPUTER : PLAYER);
+  if(moves.length === 0) return isMaximizing ? -1000 : 1000;
+  if(isMaximizing){
+    let maxEval = -Infinity;
+    for(let m of moves){
+      let nb = simulate(tempBoard, m);
+      let ev = minimax(nb, depth - 1, alpha, beta, false);
+      maxEval = Math.max(maxEval, ev);
+      alpha = Math.max(alpha, ev);
+      if(beta <= alpha) break;
+    }
+    return maxEval;
+  } else {
+    let minEval = Infinity;
+    for(let m of moves){
+      let nb = simulate(tempBoard, m);
+      let ev = minimax(nb, depth - 1, alpha, beta, true);
+      minEval = Math.min(minEval, ev);
+      beta = Math.min(beta, ev);
+      if(beta <= alpha) break;
+    }
+    return minEval;
+  }
+}
+
+function simulate(b, m){
+  let nb = b.map(r => [...r]);
+  const p = nb[m.from.y][m.from.x];
+  nb[m.to.y][m.to.x] = p;
+  nb[m.from.y][m.from.x] = EMPTY;
+  if(m.to.jump) nb[m.to.jumped.y][m.to.jumped.x] = EMPTY;
+  if(p === PLAYER && m.to.y === 0) nb[m.to.y][m.to.x] = PLAYER_KING;
+  if(p === COMPUTER && m.to.y === 7) nb[m.to.y][m.to.x] = COMPUTER_KING;
+  return nb;
+}
+
+function computerTurn(){
+  const moves = getAllPossibleMoves(board, COMPUTER);
+  if(moves.length === 0){ SFX.win(); alert("Game Over: You Win!"); return; }
+  let bestScore = -Infinity, bestMove = moves[0];
+  for(let m of moves){
+    let score = minimax(simulate(board, m), 4, -Infinity, Infinity, false);
+    if(score > bestScore){ bestScore = score; bestMove = m; }
+  }
+  applyMove(bestMove);
+}
+
+// --- GAME FLOW ---
+function applyMove(move){
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  
+  const p = board[move.from.y][move.from.x];
+  let isNewKing = false;
+
+  // Sound Logic
+  if(move.to.jump) SFX.jump(); else SFX.move();
+
+  board[move.to.y][move.to.x] = p;
+  board[move.from.y][move.from.x] = EMPTY;
+  if(move.to.jump) board[move.to.jumped.y][move.to.jumped.x] = EMPTY;
+
+  if(p === PLAYER && move.to.y === 0 && p !== PLAYER_KING) { board[move.to.y][move.to.x] = PLAYER_KING; isNewKing = true; }
+  if(p === COMPUTER && move.to.y === 7 && p !== COMPUTER_KING) { board[move.to.y][move.to.x] = COMPUTER_KING; isNewKing = true; }
+  
+  if(isNewKing) SFX.king();
+
+  if(move.to.jump){
+    const extra = getValidMovesForPiece(move.to.x, move.to.y, board).filter(m => m.jump);
+    if(extra.length > 0){
+      if(!playerTurn) setTimeout(() => applyMove({from: move.to, to: extra[0]}), 500);
+      else { selected = move.to; validMoves = extra; drawBoard(); return; }
+    }
+  }
+
+  playerTurn = !playerTurn;
+  selected = null; validMoves = [];
+  document.getElementById('turn').innerText = playerTurn ? "Your Turn" : "Computer Thinking...";
+  drawBoard();
+  
+  if(!playerTurn) {
+    const playerCanMove = getAllPossibleMoves(board, PLAYER).length > 0;
+    if(!playerCanMove) { SFX.lose(); alert("Game Over: Computer Wins!"); return; }
+    setTimeout(computerTurn, 500);
+  }
+}
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.floor((e.clientX-rect.left)/TILE), y = Math.floor((e.clientY-rect.top)/TILE);
+  if(!playerTurn) return;
+  if(selected){
+    const m = validMoves.find(mv => mv.x === x && mv.y === y);
+    if(m) return applyMove({from: selected, to: m});
+  }
+  if(board[y][x] === PLAYER || board[y][x] === PLAYER_KING){
+    selected = {x, y};
+    validMoves = getValidMovesForPiece(x, y, board);
+    drawBoard();
+  }
+});
+
+drawBoard();
+</script>
+</body>
+</html>
