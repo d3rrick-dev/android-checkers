@@ -1,32 +1,43 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <link rel="manifest" href="manifest.json">
 <title>Checkers - Smart AI with Audio</title>
 <style>
-  body { text-align:center; font-family: 'Segoe UI', Arial, sans-serif; background:#222; color:white; }
-  canvas { background:#444; display:block; margin:20px auto; border: 8px solid #111; box-shadow: 0 0 20px rgba(0,0,0,0.5); cursor: pointer; }
-  #turn { font-size: 24px; margin-bottom:10px; font-weight: bold; color: #00ffcc; text-transform: uppercase; letter-spacing: 2px; height: 30px; }
+  body { text-align:center; font-family: 'Segoe UI', Arial, sans-serif; background:#222; color:white; margin: 0; padding: 20px; touch-action: manipulation; }
+  canvas { background:#444; display:block; margin:10px auto; border: 8px solid #111; box-shadow: 0 0 20px rgba(0,0,0,0.5); cursor: pointer; max-width: 100%; height: auto; }
+  #turn { font-size: 24px; margin-bottom:10px; font-weight: bold; color: #00ffcc; text-transform: uppercase; letter-spacing: 2px; height: 35px; }
   .controls { margin-top: 10px; font-size: 14px; color: #aaa; }
+  #restartBtn { 
+    display: none; margin: 10px auto; padding: 10px 20px; 
+    background: #00ffcc; color: #222; border: none; font-weight: bold; 
+    border-radius: 5px; cursor: pointer; font-size: 16px;
+  }
+  #restartBtn:hover { background: #00cca3; }
 </style>
 </head>
 <body>
-<h2>Checkers: Human vs. Minimax AI</h2>
+<h2>Checkers: Human vs. Smart AI</h2>
 <div id="turn">Your Turn</div>
 <canvas id="board" width="400" height="400"></canvas>
+<button id="restartBtn" onclick="resetGame()">Play Again</button>
 <div class="controls">Sound Enabled • Difficulty: Hard</div>
+
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js');
   }
 </script>
+
 <script>
 // --- AUDIO ENGINE ---
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
 const SFX = {
     play(freq, type, duration, vol = 0.1) {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
         osc.type = type;
@@ -58,9 +69,10 @@ const ctx = canvas.getContext('2d');
 const SIZE = 8, TILE = canvas.width / SIZE;
 const EMPTY = 0, PLAYER = 1, COMPUTER = 2, PLAYER_KING = 3, COMPUTER_KING = 4;
 
-let board = [], selected = null, validMoves = [], playerTurn = true;
+let board = [], selected = null, validMoves = [], playerTurn = true, gameOver = false;
 
 function initBoard() {
+  board = [];
   for(let y=0; y<SIZE; y++){
     board[y]=[];
     for(let x=0; x<SIZE; x++){
@@ -70,7 +82,6 @@ function initBoard() {
     }
   }
 }
-initBoard();
 
 function drawBoard(){
   ctx.clearRect(0,0,canvas.width,canvas.height);
@@ -96,7 +107,7 @@ function drawBoard(){
       }
     }
   }
-  if(selected){
+  if(selected && !gameOver){
     ctx.strokeStyle='yellow'; ctx.lineWidth=4;
     ctx.strokeRect(selected.x*TILE, selected.y*TILE, TILE, TILE);
     validMoves.forEach(m => {
@@ -153,7 +164,6 @@ function getAllPossibleMoves(currentBoard, turn){
   return jumpMoves.length > 0 ? jumpMoves : allMoves;
 }
 
-// --- AI MINIMAX ---
 function evaluate(b) {
   let score = 0;
   for(let y=0; y<SIZE; y++){
@@ -206,8 +216,10 @@ function simulate(b, m){
 }
 
 function computerTurn(){
+  if(gameOver) return;
   const moves = getAllPossibleMoves(board, COMPUTER);
-  if(moves.length === 0){ SFX.win(); alert("Game Over: You Win!"); return; }
+  if(moves.length === 0){ endGame("You Win!"); return; }
+  
   let bestScore = -Infinity, bestMove = moves[0];
   for(let m of moves){
     let score = minimax(simulate(board, m), 4, -Infinity, Infinity, false);
@@ -216,14 +228,11 @@ function computerTurn(){
   applyMove(bestMove);
 }
 
-// --- GAME FLOW ---
 function applyMove(move){
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-  
+  if(gameOver) return;
   const p = board[move.from.y][move.from.x];
   let isNewKing = false;
 
-  // Sound Logic
   if(move.to.jump) SFX.jump(); else SFX.move();
 
   board[move.to.y][move.to.x] = p;
@@ -238,27 +247,56 @@ function applyMove(move){
   if(move.to.jump){
     const extra = getValidMovesForPiece(move.to.x, move.to.y, board).filter(m => m.jump);
     if(extra.length > 0){
-      if(!playerTurn) setTimeout(() => applyMove({from: move.to, to: extra[0]}), 500);
-      else { selected = move.to; validMoves = extra; drawBoard(); return; }
+      if(!playerTurn) {
+        setTimeout(() => applyMove({from: move.to, to: extra[0]}), 500);
+        return;
+      } else { 
+        selected = move.to; validMoves = extra; drawBoard(); return; 
+      }
     }
   }
 
   playerTurn = !playerTurn;
   selected = null; validMoves = [];
-  document.getElementById('turn').innerText = playerTurn ? "Your Turn" : "Computer Thinking...";
+  document.getElementById('turn').innerText = playerTurn ? "Your Turn" : "AI Thinking...";
   drawBoard();
   
   if(!playerTurn) {
     const playerCanMove = getAllPossibleMoves(board, PLAYER).length > 0;
-    if(!playerCanMove) { SFX.lose(); alert("Game Over: Computer Wins!"); return; }
+    if(!playerCanMove) { endGame("Computer Wins!"); return; }
     setTimeout(computerTurn, 500);
+  } else {
+    const computerCanMove = getAllPossibleMoves(board, COMPUTER).length > 0;
+    if(!computerCanMove) { endGame("You Win!"); return; }
   }
 }
 
+function endGame(msg) {
+  gameOver = true;
+  document.getElementById('turn').innerText = msg;
+  document.getElementById('restartBtn').style.display = "block";
+  if(msg.includes("You Win")) SFX.win(); else SFX.lose();
+  drawBoard();
+  setTimeout(() => alert(msg), 100);
+}
+
+function resetGame() {
+  gameOver = false;
+  playerTurn = true;
+  selected = null;
+  validMoves = [];
+  document.getElementById('turn').innerText = "Your Turn";
+  document.getElementById('restartBtn').style.display = "none";
+  initBoard();
+  drawBoard();
+}
+
 canvas.addEventListener('click', e => {
+  if(!playerTurn || gameOver) return;
   const rect = canvas.getBoundingClientRect();
-  const x = Math.floor((e.clientX-rect.left)/TILE), y = Math.floor((e.clientY-rect.top)/TILE);
-  if(!playerTurn) return;
+  const x = Math.floor((e.clientX-rect.left) / (rect.width / SIZE));
+  const y = Math.floor((e.clientY-rect.top) / (rect.height / SIZE));
+
   if(selected){
     const m = validMoves.find(mv => mv.x === x && mv.y === y);
     if(m) return applyMove({from: selected, to: m});
@@ -270,6 +308,7 @@ canvas.addEventListener('click', e => {
   }
 });
 
+initBoard();
 drawBoard();
 </script>
 </body>
