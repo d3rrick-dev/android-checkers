@@ -3,46 +3,60 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#111111">
+<meta name="mobile-web-app-capable" content="yes">
 <link rel="manifest" href="manifest.json">
-<title>Checkers - Smart AI with Audio</title>
+<title>Smart Checkers AI</title>
 <style>
-  body { text-align:center; font-family: 'Segoe UI', Arial, sans-serif; background:#222; color:white; margin: 0; padding: 20px; touch-action: manipulation; }
-  canvas { background:#444; display:block; margin:10px auto; border: 8px solid #111; box-shadow: 0 0 20px rgba(0,0,0,0.5); cursor: pointer; max-width: 100%; height: auto; }
-  #turn { font-size: 24px; margin-bottom:10px; font-weight: bold; color: #00ffcc; text-transform: uppercase; letter-spacing: 2px; height: 35px; }
+  body { 
+    text-align:center; font-family: 'Segoe UI', Arial, sans-serif; 
+    background:#222; color:white; margin: 0; padding: 20px; 
+    touch-action: manipulation; overflow: hidden;
+  }
+  canvas { 
+    background:#444; display:block; margin:10px auto; 
+    border: 8px solid #111; box-shadow: 0 0 20px rgba(0,0,0,0.5); 
+    cursor: pointer; max-width: 100%; height: auto; 
+    touch-action: none; -webkit-tap-highlight-color: transparent;
+  }
+  #turn { 
+    font-size: 24px; margin-bottom:10px; font-weight: bold; 
+    color: #00ffcc; text-transform: uppercase; letter-spacing: 2px; height: 35px; 
+  }
   .controls { margin-top: 10px; font-size: 14px; color: #aaa; }
   #restartBtn { 
     display: none; margin: 20px auto; padding: 12px 24px; 
     background: #00ffcc; color: #222; border: none; font-weight: bold; 
-    border-radius: 8px; cursor: pointer; font-size: 18px; box-shadow: 0 4px 10px rgba(0,255,204,0.3);
+    border-radius: 8px; cursor: pointer; font-size: 18px; 
+    box-shadow: 0 4px 10px rgba(0,255,204,0.3);
   }
   #restartBtn:hover { background: #00cca3; transform: scale(1.05); }
 </style>
 </head>
 <body>
-<h2>Checkers: Human vs. Smart AI</h2>
 <div id="turn">Your Turn</div>
 <canvas id="board" width="400" height="400"></canvas>
 <button id="restartBtn" onclick="resetGame()">Play Again</button>
-<div class="controls">Sound Enabled • Difficulty: Hard</div>
+<div class="controls">Vibration & Sound Enabled • AI: Hard</div>
 
 <script>
-// --- AUDIO ENGINE ---
+// --- AUDIO & HAPTIC ENGINE ---
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 const SFX = {
     play(freq, type, duration, vol = 0.1) {
         if (audioCtx.state === 'suspended') audioCtx.resume();
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
-        osc.type = type;
-        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        osc.type = type; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
         gain.gain.setValueAtTime(vol, audioCtx.currentTime);
         gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
         osc.connect(gain); gain.connect(audioCtx.destination);
         osc.start(); osc.stop(audioCtx.currentTime + duration);
     },
+    vibrate(ms) { if (navigator.vibrate) navigator.vibrate(ms); },
     move() { this.play(150, 'sine', 0.2); },
-    jump() { this.play(400, 'square', 0.15, 0.05); },
-    king() { this.play(523.25, 'triangle', 0.5); setTimeout(() => this.play(659.25, 'triangle', 0.5), 100); },
+    jump() { this.play(400, 'square', 0.15, 0.05); this.vibrate(40); },
+    king() { this.play(523.25, 'triangle', 0.5); setTimeout(() => this.play(659.25, 'triangle', 0.5), 100); this.vibrate([50, 30, 50]); },
     win() { [523, 659, 783, 1046].forEach((f, i) => setTimeout(() => this.play(f, 'sine', 0.8), i * 150)); },
     lose() { [392, 349, 311, 261].forEach((f, i) => setTimeout(() => this.play(f, 'sawtooth', 0.8, 0.05), i * 200)); }
 };
@@ -52,7 +66,6 @@ const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
 const SIZE = 8, TILE = canvas.width / SIZE;
 const EMPTY = 0, PLAYER = 1, COMPUTER = 2, PLAYER_KING = 3, COMPUTER_KING = 4;
-
 let board = [], selected = null, validMoves = [], playerTurn = true, gameOver = false;
 
 function initBoard() {
@@ -100,22 +113,14 @@ function drawBoard(){
   }
 }
 
-function getPieceDirs(piece){
-  if(piece===PLAYER) return [[-1,-1],[1,-1]];
-  if(piece===COMPUTER) return [[-1,1],[1,1]];
-  return [[-1,-1],[1,-1],[-1,1],[1,1]];
-}
-
 function isOpponent(me, other){
   if(other === EMPTY) return false;
-  const isMePlayer = (me === PLAYER || me === PLAYER_KING);
-  const isOtherPlayer = (other === PLAYER || other === PLAYER_KING);
-  return isMePlayer !== isOtherPlayer;
+  return (me === PLAYER || me === PLAYER_KING) !== (other === COMPUTER || other === COMPUTER_KING);
 }
 
 function getValidMovesForPiece(x, y, currentBoard){
   const piece = currentBoard[y][x];
-  const dirs = getPieceDirs(piece);
+  const dirs = (piece === PLAYER) ? [[-1,-1],[1,-1]] : (piece === COMPUTER) ? [[-1,1],[1,1]] : [[-1,-1],[1,-1],[-1,1],[1,1]];
   let jumps = [], slides = [];
   dirs.forEach(d => {
     const nx = x+d[0], ny = y+d[1];
@@ -147,17 +152,14 @@ function getAllPossibleMoves(currentBoard, turn){
   return jumpMoves.length > 0 ? jumpMoves : allMoves;
 }
 
-// --- MINIMAX AI ---
 function evaluate(b) {
   let score = 0;
-  for(let y=0; y<SIZE; y++){
-    for(let x=0; x<SIZE; x++){
+  for(let y=0; y<SIZE; y++)
+    for(let x=0; x<SIZE; x++)
       if(b[y][x] === COMPUTER) score += (10 + y);
       else if(b[y][x] === COMPUTER_KING) score += 25;
       else if(b[y][x] === PLAYER) score -= (10 + (7-y));
       else if(b[y][x] === PLAYER_KING) score -= 25;
-    }
-  }
   return score;
 }
 
@@ -165,23 +167,15 @@ function minimax(tempBoard, depth, alpha, beta, isMaximizing) {
   if(depth === 0) return evaluate(tempBoard);
   const moves = getAllPossibleMoves(tempBoard, isMaximizing ? COMPUTER : PLAYER);
   if(moves.length === 0) return isMaximizing ? -1000 : 1000;
-  if(isMaximizing){
-    let maxEval = -Infinity;
-    for(let m of moves){
-      let ev = minimax(simulate(tempBoard, m), depth - 1, alpha, beta, false);
-      maxEval = Math.max(maxEval, ev); alpha = Math.max(alpha, ev);
-      if(beta <= alpha) break;
-    }
-    return maxEval;
-  } else {
-    let minEval = Infinity;
-    for(let m of moves){
-      let ev = minimax(simulate(tempBoard, m), depth - 1, alpha, beta, true);
-      minEval = Math.min(minEval, ev); beta = Math.min(beta, ev);
-      if(beta <= alpha) break;
-    }
-    return minEval;
+  let evalVal = isMaximizing ? -Infinity : Infinity;
+  for(let m of moves){
+    let nb = simulate(tempBoard, m);
+    let res = minimax(nb, depth - 1, alpha, beta, !isMaximizing);
+    if(isMaximizing){ evalVal = Math.max(evalVal, res); alpha = Math.max(alpha, res); }
+    else { evalVal = Math.min(evalVal, res); beta = Math.min(beta, res); }
+    if(beta <= alpha) break;
   }
+  return evalVal;
 }
 
 function simulate(b, m){
@@ -198,7 +192,6 @@ function computerTurn(){
   if(gameOver) return;
   const moves = getAllPossibleMoves(board, COMPUTER);
   if(moves.length === 0) { endGame("You Win!"); return; }
-  
   let bestScore = -Infinity, bestMove = moves[0];
   for(let m of moves){
     let score = minimax(simulate(board, m), 4, -Infinity, Infinity, false);
@@ -228,18 +221,17 @@ function applyMove(move){
     }
   }
 
-  playerTurn = !playerTurn;
-  selected = null; validMoves = [];
-  drawBoard();
-
-  // CHECK WIN/LOSS IMMEDIATELY
+  // --- CRITICAL FIX: CHECK WIN STATE BEFORE CHANGING TURN TEXT ---
   const playerMoves = getAllPossibleMoves(board, PLAYER);
   const computerMoves = getAllPossibleMoves(board, COMPUTER);
 
-  if (playerMoves.length === 0) { endGame("Computer Wins!"); return; }
-  if (computerMoves.length === 0) { endGame("You Win!"); return; }
+  if (playerMoves.length === 0) { drawBoard(); endGame("Computer Wins!"); return; }
+  if (computerMoves.length === 0) { drawBoard(); endGame("You Win!"); return; }
 
+  playerTurn = !playerTurn;
+  selected = null; validMoves = [];
   document.getElementById('turn').innerText = playerTurn ? "Your Turn" : "AI Thinking...";
+  drawBoard();
   if(!playerTurn) setTimeout(computerTurn, 600);
 }
 
@@ -248,15 +240,13 @@ function endGame(msg) {
   document.getElementById('turn').innerText = msg;
   document.getElementById('restartBtn').style.display = "block";
   if(msg.includes("You Win")) SFX.win(); else SFX.lose();
-  drawBoard();
 }
 
 function resetGame() {
   gameOver = false; playerTurn = true; selected = null; validMoves = [];
   document.getElementById('turn').innerText = "Your Turn";
   document.getElementById('restartBtn').style.display = "none";
-  initBoard();
-  drawBoard();
+  initBoard(); drawBoard();
 }
 
 canvas.addEventListener('click', e => {
