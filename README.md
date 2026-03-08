@@ -1,3 +1,4 @@
-# android-checkers
+# 🏁 Smart Checkers AI (PWA)
+> A high-performance Checkers engine with Minimax AI, synthesized audio, and offline support.
 
-[image](./icon.png)
+![Checkers Preview](icon.png)
